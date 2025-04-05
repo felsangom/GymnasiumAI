@@ -27,7 +27,7 @@ from shapely import affinity
 2. Create the method `car_on_track` in the class `CarRacing`:
 ```python
     def car_on_track(self, border_width=0):
-        car_in_track  = False
+        car_on_track  = False
         x, y = self.car.hull.position
         point = Point(x, y)
         for poly in self.road_poly:
@@ -38,10 +38,10 @@ from shapely import affinity
                 polygon = affinity.scale(polygon, xfact=border, yfact=border)
 
             if polygon.contains(point):
-                car_in_track = True
+                car_on_track = True
                 break
 
-        return car_in_track
+        return car_on_track
 ```
 
 3. Call the `car_on_track` method inside the `step` method, and apply a negative reward if the car go out of the bounds of the specified track border.

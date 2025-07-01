@@ -4,10 +4,12 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 import tensorflow as tf
+from safedriving_wrapper import SafeDrivingWrapper
 from tensorflow.keras import layers
 
 # Configuração do ambiente
-env = gym.make("CarRacing-v3", continuous=False, render_mode="human")
+env_raw = gym.make("CarRacing-v3", continuous=False, render_mode="human")
+env = SafeDrivingWrapper(env_raw)
 
 # Hiperparâmetros
 STATE_SHAPE = (96, 96, 1)
@@ -25,23 +27,17 @@ SAVE_WEIGHTS = False
 LOAD_EXISTING_WEIGHTS = True
 SAVE_WEIGHTS_INTERVAL = 100
 
-def preprocess_state(state):
-    """ Converte a imagem para escala de cinza e normaliza."""
-    state = tf.image.rgb_to_grayscale(state)
-    state = tf.image.resize(state, (96, 96))
-    return state / 255.0
-
 class DQNAgent:
     def __init__(self):
         self.memory = deque(maxlen=MEMORY_SIZE)
         self.epsilon = EPSILON
-        self.model = self.build_model()
-        self.target_model = self.build_model()
+        self.model = self._build_model()
+        self.target_model = self._build_model()
         self.update_target_model()
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=ALPHA)
 
-    def build_model(self):
-        """ Cria a rede neural."""
+    def _build_model(self):
+        """Builds the CNN model."""
         model = tf.keras.Sequential([
             layers.Input(STATE_SHAPE),
             layers.Conv2D(32, (8, 8), strides=4, activation='relu'),
@@ -49,45 +45,49 @@ class DQNAgent:
             layers.Conv2D(64, (3, 3), strides=1, activation='relu'),
             layers.Flatten(),
             layers.Dense(512, activation='relu'),
-            layers.Dense(ACTION_SIZE, activation='linear')
+            layers.Dense(ACTION_SIZE, activation='linear') # Q-values
         ])
         return model
 
     def update_target_model(self):
-        """ Copia os pesos do modelo principal para o modelo alvo."""
+        """Copies weights from the main model to the target model."""
         self.target_model.set_weights(self.model.get_weights())
 
     def act(self, state):
-        """ Escolhe uma ação baseada na política epsilon-greedy."""
+        """Chooses an action using an epsilon-greedy policy."""
         if np.random.rand() <= self.epsilon:
             return random.randrange(ACTION_SIZE)
         q_values = self.predict(self.model, tf.expand_dims(state, axis=0))
         return np.argmax(q_values[0].numpy())
 
     def remember(self, state, action, reward, next_state, done):
-        """ Armazena a experiência no replay buffer."""
+        """Stores an experience in the replay buffer."""
         self.memory.append((state, action, reward, next_state, done))
 
     def replay(self):
-        """ Treina o modelo com amostras da memória."""
+        """Trains the model using a random batch of experiences from memory."""
         if len(self.memory) < BATCH_SIZE:
             return
+
         batch = random.sample(self.memory, BATCH_SIZE)
         states, actions, rewards, next_states, dones = zip(*batch)
+
         states = np.array(states)
         next_states = np.array(next_states)
 
-        q_values = self.predict(self.model, states).numpy()
-        next_q_values = self.predict(self.target_model, next_states).numpy()
+        # Predict Q-values for current states and next states
+        q_values_current = self.predict(self.model, states).numpy()
+        q_values_next = self.predict(self.target_model, next_states).numpy()
 
         for i in range(BATCH_SIZE):
             if dones[i]:
-                q_values[i, actions[i]] = rewards[i]
+                q_values_current[i, actions[i]] = rewards[i]
             else:
-                q_values[i, actions[i]] = rewards[i] + GAMMA * np.amax(next_q_values[i])
+                q_values_current[i, actions[i]] = rewards[i] + GAMMA * np.amax(q_values_next[i])
 
-        self.train_step(states, q_values)
+        self.train_step(states, q_values_current)
 
+        # Decay epsilon
         if self.epsilon > EPSILON_MIN:
             self.epsilon *= EPSILON_DECAY
 
@@ -99,27 +99,32 @@ class DQNAgent:
         if LOAD_EXISTING_WEIGHTS:
             try:
                 self.model.load_weights(WEIGHTS_FILE)
-                self.target_model.load_weights(WEIGHTS_FILE)
+                self.update_target_model()
                 self.epsilon = EPSILON_MIN
-                print("Arquivo de pré-treino encontrado, continuando treinamento...")
+                print("Pre-trained weights found. Resuming training...")
             except FileNotFoundError:
-                print("Arquivo de pré-treino não encontrado, iniciando treinamento...")
+                print("No pre-trained weights found. Starting from scratch...")
 
     @tf.function
     def predict(self, model, states):
-        """ Faz a previsão dos valores Q para múltiplos estados."""
         return model(states, training=False)
 
     @tf.function
     def train_step(self, states, targets):
-        """ Passo de treinamento otimizado com @tf.function."""
         with tf.GradientTape() as tape:
             q_values = self.model(states, training=True)
-            loss = tf.keras.losses.MSE(targets, q_values)
+            loss = tf.keras.losses.MeanSquaredError()(targets, q_values)
         grads = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
-# Treinamento
+
+def preprocess_state(state):
+    """Converts the image to grayscale, resizes, and normalizes it."""
+    # [Nota do revisor: A conversão para TF tensor é mais eficiente]
+    state_tensor = tf.convert_to_tensor(state)
+    state_tensor = tf.image.rgb_to_grayscale(state_tensor)
+    return tf.cast(state_tensor, tf.float32) / 255.0
+
 def train_agent(episodes=1000):
     agent = DQNAgent()
     agent.load_weights()
@@ -127,7 +132,7 @@ def train_agent(episodes=1000):
     for episode in range(episodes):
         state, _ = env.reset()
         state = preprocess_state(state)
-        real_reward = 0
+
         total_reward = 0
         done = False
 
@@ -136,16 +141,16 @@ def train_agent(episodes=1000):
             next_state, reward, done, _, _ = env.step(action)
             next_state = preprocess_state(next_state)
 
-            real_reward += reward
-
-            # Modificação da recompensa
-            car_on_track = env.unwrapped.car_on_track()
+            # Custom Reward Shaping
+            car_on_track = env.car_on_track()
             if car_on_track:
                 speed = np.linalg.norm(env.unwrapped.car.hull.linearVelocity)
-                speed_bonus = speed * 0.1
-                low_speed_penalty = -2 if speed < 2 else 0
+                # Reward for high speed, penalize for low speed
+                speed_bonus = max(0, speed * 0.1)
+                low_speed_penalty = -1 if speed < 1.0 else 0
                 reward += speed_bonus + low_speed_penalty
             else:
+                # This penalty is now handled by the wrapper, but we can add more
                 reward -= 2
 
             agent.remember(state, action, reward, next_state, done)
@@ -159,6 +164,7 @@ def train_agent(episodes=1000):
         if episode > 0 and episode % SAVE_WEIGHTS_INTERVAL == 0:
             agent.save_weights()
 
-        print(f"Episódio {episode+1}, Recompensa: {total_reward}, Recompensa real: {real_reward}, Epsilon: {agent.epsilon:.2f}")
+        print(f"Episode {episode+1}, Total Reward: {total_reward:.2f}, Epsilon: {agent.epsilon:.4f}")
 
+# Let's train!
 train_agent()

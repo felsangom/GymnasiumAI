@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .venv/
 venv/
 .idea/
 # Logs do TensorBoard
 logs/
+# Estado de treino para --resume
+*.train_state.npz

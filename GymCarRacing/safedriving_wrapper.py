@@ -3,7 +3,6 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-from shapely import affinity
 from shapely.geometry import Point, Polygon
 from shapely.strtree import STRtree
 
@@ -12,18 +11,26 @@ class SafeDrivingWrapper(gym.Wrapper):
     """
     Cria uma 'zona segura' ao redor da pista e aplica o reward shaping:
 
-    - fora da zona segura: penalidade grande e fim imediato do episódio;
-    - dentro: bônus proporcional à velocidade e penalidade se estiver parado.
+    - fora da zona segura: penalidade e fim imediato do episódio;
+    - dentro: pequeno bônus proporcional à velocidade e penalidade se parado.
 
-    Os polígonos da pista são construídos uma única vez por `reset` (STRtree),
-    e a checagem roda uma única vez por passo (resultado em `info["on_track"]`).
+    O bônus de velocidade é propositalmente pequeno: a recompensa por tile do
+    jogo (~3 por tile) deve continuar sendo o sinal dominante.
+
+    A recompensa original do ambiente fica em `info["raw_reward"]`, para que a
+    pontuação reportada seja comparável ao score padrão do CarRacing.
+
+    A zona segura é a pista expandida em `border_margin` unidades do mundo em
+    todas as direções (a pista tem ~6.7 unidades de cada lado do centro). Os
+    polígonos são construídos uma vez por `reset` (STRtree) e a checagem roda
+    uma vez por passo (`info["on_track"]`).
     """
     def __init__(
-        self, env, border_width=0.5, off_track_penalty=100.0,
-        speed_bonus_scale=0.1, low_speed_threshold=1.0, low_speed_penalty=1.0
+        self, env, border_margin=2.0, off_track_penalty=30.0,
+        speed_bonus_scale=0.005, low_speed_threshold=1.0, low_speed_penalty=0.1
     ):
         super().__init__(env)
-        self.border_width = border_width
+        self.border_margin = border_margin
         self.off_track_penalty = off_track_penalty
         self.speed_bonus_scale = speed_bonus_scale
         self.low_speed_threshold = low_speed_threshold
@@ -35,9 +42,8 @@ class SafeDrivingWrapper(gym.Wrapper):
         polygons = []
         for poly in self.unwrapped.road_poly:
             polygon = Polygon(poly[0])
-            if self.border_width > 0:
-                scale = 1 + self.border_width
-                polygon = affinity.scale(polygon, xfact=scale, yfact=scale)
+            if self.border_margin > 0:
+                polygon = polygon.buffer(self.border_margin)
             polygons.append(polygon)
         self._tree = STRtree(polygons)
 
@@ -58,6 +64,7 @@ class SafeDrivingWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        info["raw_reward"] = float(reward)
         self._on_track = self._check_on_track()
         info["on_track"] = self._on_track
 
@@ -66,7 +73,7 @@ class SafeDrivingWrapper(gym.Wrapper):
             terminated = True
         else:
             speed = float(np.linalg.norm(self.unwrapped.car.hull.linearVelocity))
-            reward += max(0.0, speed * self.speed_bonus_scale)
+            reward += speed * self.speed_bonus_scale
             if speed < self.low_speed_threshold:
                 reward -= self.low_speed_penalty
 
@@ -77,7 +84,8 @@ class FrameStackSkipWrapper(gym.Wrapper):
     """
     Pré-processamento de imagem: escala de cinza (uint8), frame skip e
     empilhamento dos últimos `stack` frames. Dá ao agente noção de movimento.
-    Observação resultante: (96, 96, stack) uint8.
+    Observação resultante: (H, W, stack) uint8. No reset, o primeiro frame é
+    repetido para preencher o empilhamento.
     """
     _GRAY = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
@@ -102,11 +110,13 @@ class FrameStackSkipWrapper(gym.Wrapper):
         return self._stacked(), info
 
     def step(self, action):
-        total_reward = 0.0
+        total_reward, total_raw = 0.0, 0.0
         for _ in range(self.frame_skip):
             obs, reward, terminated, truncated, info = self.env.step(action)
             total_reward += reward
+            total_raw += info.get("raw_reward", reward)
             if terminated or truncated:
                 break
         self.frames.append(self._gray(obs))
+        info["raw_reward"] = total_raw
         return self._stacked(), total_reward, terminated, truncated, info

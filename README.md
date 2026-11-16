@@ -80,13 +80,14 @@ Unlike CartPole and LunarLander, the state is obtained directly from rendered fr
 The implementation includes:
 
 - Double DQN with CNN-based state processing
-- Experience Replay (uint8 frames)
+- Experience Replay storing single uint8 frames and rebuilding the stacks at sampling time (4x less memory)
 - Hard-updated Target Network
 - Epsilon-greedy exploration
 - Grayscale conversion, frame skip and frame stacking (4 frames, gives the agent a notion of motion)
-- Custom reward shaping based on vehicle speed and track position
-- Custom environment wrapper for detecting when the vehicle leaves the track
-- Pre-trained weights (`car_racing.weights.h5`) were trained with the previous single-frame input and are not compatible with the stacked-frame model
+- Light reward shaping (small speed bonus, off-track penalty); the original game reward is tracked separately and is the score used for evaluation and checkpoints
+- Custom environment wrapper for detecting when the vehicle leaves the track (uniform safety margin around the road)
+
+Pre-trained weights are included (`car_racing_dqn_weights.weights.h5`), trained for 700 episodes on the stacked-frame model (greedy score of about 910 on the 20 fixed evaluation tracks).
 
 The environment was extended with track boundary detection so episodes can be terminated when the vehicle moves too far outside the track. This reduces time spent exploring clearly invalid states and makes training more focused.
 
@@ -108,7 +109,7 @@ Custom environment wrapper:
 GymCarRacing/safedriving_wrapper.py
 ```
 
-A recorded example of the trained agent is also available:
+A recorded example of a trained agent is also available (recorded with an earlier, single-frame version of the model):
 
 [CarRacing demo](GymCarRacing/car_racing.mp4)
 
@@ -196,45 +197,56 @@ pip install -r requirements.txt
 
 ## Running the Agents
 
-Each environment has its own implementation. By default no window is opened (faster training, works on servers). To watch the agent, set `RENDER=human`:
+Run every agent as a module **from the repository root**. By default no window is opened (faster training, works on servers).
 
 ```bash
-RENDER=human python cart_pole.py
+python -m GymCartPole.cart_pole
+python -m GymLunarLander.lunar_lander
+python -m GymCarRacing.car_racing
 ```
 
-Shared components (Dueling layer, replay buffers, DQN agent and training loop) live in `common/dqn.py`. Weights and TensorBoard logs are written next to each script (`logs/` is git-ignored).
+Options (the same for the three agents):
 
-### CartPole
+| Option | Description |
+|---|---|
+| `--play [N]` | Do not train: load the saved weights and play `N` greedy episodes (default 5) |
+| `--render` | Open the environment window (same as `RENDER=human`) |
+| `--episodes N` | Maximum number of training episodes |
+| `--load` | Start training from the saved weights |
+| `--resume` | Resume training from the last saved training state |
+| `--seed N` | Random seed |
+| `--target-score X` | Greedy evaluation score that ends training (overrides the environment default) |
+
+Watching a trained agent:
 
 ```bash
-cd GymCartPole
-python cart_pole.py
+python -m GymLunarLander.lunar_lander --play --render
 ```
 
-### LunarLander
+How training works:
 
-```bash
-cd GymLunarLander
-python lunar_lander.py
-```
-
-### CarRacing
-
-```bash
-cd GymCarRacing
-python car_racing.py
-```
-
-Some directories include pre-trained weights that can be used to run or continue training existing agents.
+- Every few episodes the agent is evaluated greedily (no exploration) on a separate environment with fixed seeds. Checkpoints and the "solved" criterion use this score, not the noisy training episodes.
+- Saved weights are only replaced when a new evaluation beats the score recorded in the `.meta.json` file next to them, so starting a new training run never destroys a better model.
+- The full training state (networks, optimizer, step counters) is saved at every evaluation and on `Ctrl+C`; continue with `--resume`. The replay buffer is not saved and is refilled during warm-up.
+- TensorBoard logs are written to `logs/` next to each script (git-ignored): `tensorboard --logdir GymCartPole/logs`.
 
 Training reinforcement learning agents can require a significant number of interactions with the environment, and results may vary between executions because exploration and environment behavior are stochastic.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
 
 ## Project Structure
 
 ```text
 GymnasiumAI/
 ├── common/
-│   └── dqn.py
+│   ├── buffers.py      # uniform, prioritized (Sum Tree) and frame-stack replay buffers
+│   ├── dqn.py          # Dueling network and DQN agent
+│   └── training.py     # training loop, greedy evaluation and command line
 │
 ├── GymCartPole/
 │   ├── cart_pole.py
@@ -250,7 +262,10 @@ GymnasiumAI/
 │   ├── car_racing.mp4
 │   └── ...
 │
+├── tests/
+├── pyproject.toml
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 

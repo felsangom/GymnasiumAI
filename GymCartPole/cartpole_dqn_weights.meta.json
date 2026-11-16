@@ -1,0 +1,7 @@
+{
+  "eval_mean": 500.0,
+  "eval_episodes": 10,
+  "eval_seed": 1042,
+  "trained_episodes": 540,
+  "saved_at": "2026-11-16T10:04:22"
+}

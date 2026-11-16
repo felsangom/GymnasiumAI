@@ -1,5 +1,6 @@
-numpy
-tensorflow
-shapely>=2.0
-gymnasium[box2d]
-tensorboard
+# Versões com as quais o projeto foi testado (Python 3.12)
+numpy>=2.1,<2.4
+tensorflow>=2.21,<2.22
+tensorboard>=2.21,<2.22
+gymnasium[box2d]>=1.4,<1.5
+shapely>=2.1,<3

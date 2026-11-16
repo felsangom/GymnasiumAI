@@ -17,7 +17,7 @@ The implementation combines several techniques intended to improve training stab
 - Deep Q-Network (DQN)
 - Double DQN
 - Dueling DQN architecture
-- Prioritized Experience Replay (PER)
+- Prioritized Experience Replay (PER, Sum Tree)
 - Epsilon-greedy exploration with decay
 - Soft target network updates using Polyak averaging
 - Gradient clipping
@@ -79,14 +79,14 @@ Unlike CartPole and LunarLander, the state is obtained directly from rendered fr
 
 The implementation includes:
 
-- Deep Q-Network with CNN-based state processing
-- Experience Replay
-- Target Network
+- Double DQN with CNN-based state processing
+- Experience Replay (uint8 frames)
+- Hard-updated Target Network
 - Epsilon-greedy exploration
-- Image preprocessing and grayscale conversion
+- Grayscale conversion, frame skip and frame stacking (4 frames, gives the agent a notion of motion)
 - Custom reward shaping based on vehicle speed and track position
 - Custom environment wrapper for detecting when the vehicle leaves the track
-- Pre-trained model weights
+- Pre-trained weights (`car_racing.weights.h5`) were trained with the previous single-frame input and are not compatible with the stacked-frame model
 
 The environment was extended with track boundary detection so episodes can be terminated when the vehicle moves too far outside the track. This reduces time spent exploring clearly invalid states and makes training more focused.
 
@@ -191,12 +191,18 @@ cd GymnasiumAI
 Install the required dependencies:
 
 ```bash
-pip install numpy tensorflow shapely "gymnasium[all]"
+pip install -r requirements.txt
 ```
 
 ## Running the Agents
 
-Each environment has its own implementation.
+Each environment has its own implementation. By default no window is opened (faster training, works on servers). To watch the agent, set `RENDER=human`:
+
+```bash
+RENDER=human python cart_pole.py
+```
+
+Shared components (Dueling layer, replay buffers, DQN agent and training loop) live in `common/dqn.py`. Weights and TensorBoard logs are written next to each script (`logs/` is git-ignored).
 
 ### CartPole
 
@@ -227,6 +233,9 @@ Training reinforcement learning agents can require a significant number of inter
 
 ```text
 GymnasiumAI/
+├── common/
+│   └── dqn.py
+│
 ├── GymCartPole/
 │   ├── cart_pole.py
 │   └── ...
@@ -241,6 +250,7 @@ GymnasiumAI/
 │   ├── car_racing.mp4
 │   └── ...
 │
+├── requirements.txt
 └── README.md
 ```
 
